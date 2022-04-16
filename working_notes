@@ -1,0 +1,87 @@
+updated requirements:
+1.) get and parse all versions from tags
+2.) get current tag version and status from git describe
+3.) determine what new version would be required based on current version and modifications to it
+4.) determine whether this new version is valid (i.e., if you already have version 4.1 and a new release intended to maintain 3.1 would remove or change tests, you'll be blocked; you'll either have to achieve this another way or declare this lineage a dead-end.)
+
+situation: the user has pushed a commit which is getting handed off to CI for testing; tdver is one of the tests; the test will fail if the commit requires incrementing version but the version hasn't been incremented. This means we need to work out the mechanics of how we know if it needs an update or not.
+scenario A: I am 1 commit from tag t0.1.1; what happens?
+	- if we already incremented properly, don't do anything
+	- if we haven't incremented, increment!
+	- if we have incremented but the increment is no longer correct due to additional commits, increment!
+scenario B: I am 2 commits after the code version shifted to t0.2.2, but my most recent tag is only t0.2.0
+	- this should never happen as-is, because you haven't released, and you shouldn't increment if you didn't release.
+	- tdver should nonetheless know that your next valid version is 0.2.1 or 0.3.0 and would effectively ignore the code version
+
+	It seems to be the case that what I need is current_version and new_version_depending_on_commits_since_current_version; this can still just rely on tags. It's all commits from tag to now.
+	The wrench in this idea is that it needs to be possible to sate the integration failure by bumping the "paper" version to show you're aware, or else every pull request is going to show up as a failure.
+
+	This probably manifests itself with a single canonical repository location that contains the current version, and a command which can use this version as the foundation for a tag. The hitch is that each commit a user sends up isn't a release. The maintainer decides when to release, and it isn't (really) any of a contributor's business. Still, if we apply this logic to the repository consistently over time, the stated code version should be right when it's time to release; we press release and the code version is used to create a tag. But if we need a custom command to do this version->tag business anyways, we could just as easily be performing a single check at frobulation time to make sure that we're releasing the right version. And then people don't have to think about this very much. It might also be the case that we want to dictate via the CI framework more complex conditions for the work we're doing. For example, if someone is trying to make a bugfix and their pull request would result in a non-bug-fix increment, CI could reject their patch for this reason. If they're trying to bump minor, similar; is there any way to achieve this?
+
+	We can also provide a commit hook that will do this automagically
+	HARK - I can use git describe --dirty to get a string like:
+	t0.0.0 						this is a bare, unmodified tag state
+	t0.0.0-3-g84ce97f			we're at this tag state, plus 3 commits, @ ref
+	t0.0.0-2-g87d2a18-dirty		we're at this tag state, plus 2 commits, @ ref, AND our working copy has uncommitted changes
+	This doesn't tell me if the changes are insertions or deletions, but the information it contains lets us be much more specific when we look for updates.
+
+primary challenges
+1 - get current version (we are going to assert for now that this must come from a tag)
+2 - determine test changes since this value was set
+
+
+this was such a cluster. There are 3 primary use cases:
+1. automatically select the right version when we release
+2. let us know what the version-number consequences of adding a changeset to the release are
+3. allow us to impose rules keeping changesets which violate our release goals out of the release
+
+A key to answering this is probably somethign along the lines of: how do I invision milestones or roadmaps working when versions are enforced.
+On github the solution to my problem is probably unique travis.yml files per branch which allow us to have different requirements. For example, the master branch is probably the only branch with a rule that lets it increment major versions. If we have a 3.x branch, its YML file won't let pull requests for the branch pass if they would force a major version update. This implies we'd also make a branch for 3.3 development as soon as 3.2 is merged into master and released; 3.2 remains a valid branch which can receive bugfix releases, but no uh minor releases.
+
+It's starting to sound like tdver should have its own release command which uses its own rules to automagically create some tags and branches on our git repo for us.
+
+When we first "tdver" our repository it'll create branches for v1 and v0.1; our goal is to merge changes into the v0.1 branch, so the way this will work is that we merge our changes in, use our release command, and the version of the branch is updated and tagged, and the branch is merged into the v1 branch and into master. It auto-makes our .yml files such that the tdver command used by travis will reject version increments that don't belong on the branch.
+IF this change was sufficient to force an increment to v0.1, a v0.2 branch will be created, and the .yml file for the 0.1 branch will be updated such that it will now reject any change that increments minor.
+
+We shouldn't, in theory, get changes in .1 that could force an increment to 1, because .1 is going to have a YML rule that would cause a test failure for such a pull request. When we decide we ARE interested in incrementing 1, we need to merge 0.N into 1, merge in other new feature work, and use the release command. This will trigger the creation of version 2 and 1.1 branches, merge 1 into master.
+
+The real merge logic probably uses --contains to merge with anything that it needs to be merged with for everyone to stay up-to-date. So then we still have a v0.1 branch sitting around somewhere that we can receive PRs on or work on for bugfixes, and the yml settings will only accept bug fixes on it now, so it's really easy to make sure committers aren't pushing problematic changesets (assuming they and their tests are decent...)
+
+upshot/downshot is that this is both more and less complex than I suspected. The basic logic itself is a little more complex than I thought, but it seems like this can almost all be done with a few commands and some hookz.
+
+another possibility is that we store our test output in some way that allows us to just version test output; the plus here is that we can handle provisional tests in-place because they're just handled correctly in the test output, but the trick is that it's not obvious how we monitor a test for changes.
+
+the upsides to using the simple git version is that it can be adaptable across programming languages easily without language-specific implementations and that its rigidity should encourage some degree of seriousness when it comes to getting tests right and not needing to force unnecessary version increments just to fix test comments or something.
+
+	how do I specify my intent to support "t3" versus "t4.2?"
+	In each case the desire is to seek out the most-recent version one level deeper than the specified input. It has to be t3 and 4.2 because 3.0, while we could resolve it to 3.x, would be ambiguous/confusing.
+	What if we don't specify? Checkout the tag, identify the appropriate version we could maintain from it, run a git checkout -b branchname to instantiate it...
+	so if my current tag is t3.4.2, how do I know if "tdver support", how do I know if we're supposed to support t3 or t3.4? To some extent we can resolve from repo history. If 3.5 exists, we CAN'T support the whole 3.X branch from this tag; we could only mean to support 3.4.x; if version 4.0.0 and 3.5.0 both exist, it's obvious we can only viably support 3.4.x from here.
+	It seems like the logic boils down to:
+	1.) If we think of our versions/tags as a tree structure, does this tag sit at the end of any branch? If it sits at the end of no branch, we can't support anything. Let's go grab the tag structure for a real repo and see how the logic would play out.
+	1.0.0 tip of all branches; support has no meaning here
+	0.10.1 => creates branch t0 which can make 0.x>10 releases (because it is the tip of 0.X and as such supporting 0.10 itself makes no local sense)
+	0.10(.0) => refuses, because it isn't the tip of the 0.10 series.
+	0.9(.0) => creates branch t0.9 which can make 0.9.x releases.
+	0.8.1 = > creates branch t0.8 which can make 0.8.x>1 releases.
+	0.8(.0) => refuses, because it isn't the tip of the 0.8 series.
+	0.7.2 => creates branch t0.7 which can make 0.3.x>2 releases.
+	0.7.1 => refuses, because it isn't the tip of the 0.7 series.
+	0.7(.0) => refuses, because it isn't the tip of the 0.7 series.
+	0.6(.0) => creates branch t0.6 which can make 0.6.x releases.
+	0.5(.0) => creates branch t0.5 which can make 0.5.x releases.
+	0.4(.0) => creates branch t0.4 which can make 0.4.x releases.
+	0.3.1 = > creates branch t0.3 which can make 0.3.x>1 releases.
+	0.3(.0) => refuses, because it isn't the tip of the 0.3 series.
+	0.2(.0) => creates branch t0.2 which can make 0.2.x releases.
+	0.1(.0) => creates branch t0.1 which can make 0.1.x releases.
+
+
+
+
+			 here's an iterative version but it seems to obfuscate rather than clarify what we're doing.
+		 relevant_versions = self.versions
+		 for index, part in enumerate(version):
+		 	relevant_versions = filter(lambda x: x[index] == version[index], relevant_versions)
+		 	if version[index] == max(map(lambda x: x[index], relevant_versions)):
+		 		return version[self.A:index]
