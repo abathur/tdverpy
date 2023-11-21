@@ -10,6 +10,10 @@ pkgs.python3.pkgs.buildPythonPackage rec {
   #   rev = "c0ef630a2b2bc283221b293ac057d57100182f02";
   #   sha256 = "0swn2p2fwifvvvi9b1xz2kjq5pwimxffwy9dsa99w1ks944gzs4n";
   # };
+
+  prePatch = ''
+    substituteAllInPlace setup.cfg
+  '';
   buildInputs = [ ];
 
   propagatedBuildInputs = with pkgs.python3.pkgs; [
