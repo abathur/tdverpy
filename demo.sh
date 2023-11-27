@@ -11,8 +11,8 @@ phase()(
 create_playground(){
 	playground="$(mktemp -d)"
 	pushd "$playground"
-	git config --global user.email "testyboi@example.com"
-	git config --global user.name "Testy Boi"
+	git config user.email "testyboi@example.com"
+	git config user.name "Testy Boi"
 }
 
 init_git_repo(){
